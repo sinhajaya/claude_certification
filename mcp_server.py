@@ -1,4 +1,6 @@
+from click import prompt
 from mcp.server.fastmcp import FastMCP
+from mcp.server.fastmcp.prompts import base
 from pydantic import Field
 
 mcp = FastMCP("DocumentMCP", log_level="ERROR")
@@ -13,7 +15,7 @@ docs = {
     "spec.txt": "These specifications define the technical requirements for the equipment.",
 }
 
-# TODO: Write a tool to read a doc
+#Write a tool to read a doc
 @mcp.tool(
     name="read_doc_contents",
     description="Read the contents of documents and return it as a string."
@@ -25,7 +27,7 @@ def read_document(
         raise ValueError(f"Document with id {doc_id} does not exist")
     return docs[doc_id]
 
-# TODO: Write a tool to edit a doc
+#Write a tool to edit a doc
 @mcp.tool(
     name="edit_document",
     description="Edit a document by replacing a string in the document content with a new string"
@@ -58,9 +60,51 @@ def fetch_document(doc_id: str) -> str:
         raise ValueError(f"Document with id {doc_id} does not exist")
     return docs[doc_id]
 
-# TODO: Write a prompt to rewrite a doc in markdown format
-# TODO: Write a prompt to summarize a doc
+# Write a prompt to rewrite a doc in markdown format
+@mcp.prompt(
+    name="format",
+    description="Rewrites the contents of the document in Markdown format."
+)
+def format_document(
+    doc_id: str = Field(description="Id of the document to format")
+)-> list[base.Message]:
+    prompt=f"""
+    Your goal is to reformat the contents of the document in Markdown format. 
+    
+    The id of the document you need to format is:
+    <document_id>
+    {doc_id}
+    </document_id>
+    
+    Add in headers, bullet points, tables, etc as necessary. Feel free to add in structure.
+    Use the 'edit_document' tool to edit the document. After the document has been reformatted...
+    """
 
+    return [
+        base.UserMessage(prompt)
+    ]
+
+# Write a prompt to summarize a doc
+@mcp.prompt(
+    name="summarize",
+    description="Summarizes the contents of the document."
+)
+def summarize_document(
+        doc_id: str = Field(description="Id of the document to summarize")
+)-> list[base.Message]:
+    prompt=f"""
+    Your goal is to summarize the contents of the ducument.
+    
+    The id of the ducument you need to summarize is:
+    <ducument_id>
+    {doc_id}
+    </ducument_id>
+    
+    Keep the summary as brief as possible without missing any details. Give a clear and concise summary.
+    """
+    return [
+        base.UserMessage(prompt)
+    ]
 
 if __name__ == "__main__":
     mcp.run(transport="stdio")
