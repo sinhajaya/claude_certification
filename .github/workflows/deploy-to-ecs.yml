@@ -1,0 +1,200 @@
+name: Deploy to AWS ECS
+
+on:
+  push:
+    branches:
+      - main
+
+env:
+  AWS_REGION: ap-south-1
+  ECS_SERVICE: claude-certification
+  ECS_CLUSTER: default
+  CONTAINER_NAME: claude-certification
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Create CloudWatch Log Group
+        run: |
+          aws logs create-log-group \
+            --log-group-name /ecs/claude-certification \
+            --region ${{ env.AWS_REGION }} 2>/dev/null || true
+          aws logs put-retention-policy \
+            --log-group-name /ecs/claude-certification \
+            --retention-in-days 7 \
+            --region ${{ env.AWS_REGION }} 2>/dev/null || true
+
+      - name: Login to Amazon ECR
+        id: login-ecr
+        uses: aws-actions/amazon-ecr-login@v2
+
+      - name: Build, tag, and push image to Amazon ECR
+        env:
+          ECR_REGISTRY: ${{ steps.login-ecr.outputs.registry }}
+          ECR_REPOSITORY: ${{ env.CONTAINER_NAME }}
+          IMAGE_TAG: ${{ github.sha }}
+        run: |
+          # Create ECR repository if it doesn't exist
+          aws ecr describe-repositories \
+            --repository-names $ECR_REPOSITORY \
+            --region ${{ env.AWS_REGION }} 2>/dev/null || \
+            aws ecr create-repository \
+              --repository-name $ECR_REPOSITORY \
+              --region ${{ env.AWS_REGION }}
+          
+          # Build and push Docker image
+          docker build -t $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG .
+          docker tag $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG $ECR_REGISTRY/$ECR_REPOSITORY:latest
+          docker push $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG
+          docker push $ECR_REGISTRY/$ECR_REPOSITORY:latest
+          echo "image=$ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG" >> $GITHUB_OUTPUT
+
+      - name: Create ECS Task Definition
+        id: task-def
+        env:
+          ECR_REGISTRY: ${{ steps.login-ecr.outputs.registry }}
+          ECR_REPOSITORY: ${{ env.CONTAINER_NAME }}
+          IMAGE_TAG: ${{ github.sha }}
+        run: |
+          cat > task-definition.json <<EOF
+          {
+            "family": "${{ env.CONTAINER_NAME }}",
+            "networkMode": "awsvpc",
+            "requiresCompatibilities": ["FARGATE"],
+            "cpu": "256",
+            "memory": "512",
+            "containerDefinitions": [
+              {
+                "name": "${{ env.CONTAINER_NAME }}",
+                "image": "${{ env.ECR_REGISTRY }}/${{ env.ECR_REPOSITORY }}:${{ github.sha }}",
+                "portMappings": [
+                  {
+                    "containerPort": 8081,
+                    "hostPort": 8081,
+                    "protocol": "tcp"
+                  }
+                ],
+                "logConfiguration": {
+                  "logDriver": "awslogs",
+                  "options": {
+                    "awslogs-group": "/ecs/claude-certification",
+                    "awslogs-region": "${{ env.AWS_REGION }}",
+                    "awslogs-stream-prefix": "ecs"
+                  }
+                },
+                "environment": []
+              }
+            ]
+          }
+          EOF
+          cat task-definition.json
+
+      - name: Register ECS Task Definition
+        id: register-task
+        run: |
+          TASK_DEFINITION=$(aws ecs register-task-definition \
+            --cli-input-json file://task-definition.json \
+            --region ${{ env.AWS_REGION }})
+          echo "task-definition-arn=$(echo $TASK_DEFINITION | jq -r '.taskDefinition.taskDefinitionArn')" >> $GITHUB_OUTPUT
+
+      - name: Get default VPC resources
+        id: vpc-resources
+        run: |
+          # Get default VPC
+          VPC_ID=$(aws ec2 describe-vpcs \
+            --filters Name=is-default,Values=true \
+            --query 'Vpcs[0].VpcId' \
+            --output text \
+            --region ${{ env.AWS_REGION }})
+          
+          # Get default security group
+          SG_ID=$(aws ec2 describe-security-groups \
+            --filters Name=vpc-id,Values=$VPC_ID Name=group-name,Values=default \
+            --query 'SecurityGroups[0].GroupId' \
+            --output text \
+            --region ${{ env.AWS_REGION }})
+          
+          # Get default subnets
+          SUBNET_IDS=$(aws ec2 describe-subnets \
+            --filters Name=vpc-id,Values=$VPC_ID \
+            --query 'Subnets[0:2].SubnetId' \
+            --output text \
+            --region ${{ env.AWS_REGION }})
+          
+          echo "vpc-id=$VPC_ID" >> $GITHUB_OUTPUT
+          echo "sg-id=$SG_ID" >> $GITHUB_OUTPUT
+          echo "subnet-ids=$SUBNET_IDS" >> $GITHUB_OUTPUT
+
+      - name: Update Security Group to allow port 8081
+        run: |
+          SG_ID=${{ steps.vpc-resources.outputs.sg-id }}
+          # Allow inbound on port 8081 from anywhere (0.0.0.0/0)
+          aws ec2 authorize-security-group-ingress \
+            --group-id $SG_ID \
+            --protocol tcp \
+            --port 8081 \
+            --cidr 0.0.0.0/0 \
+            --region ${{ env.AWS_REGION }} 2>/dev/null || true
+
+      - name: Create or Update ECS Service
+        run: |
+          SUBNET_ID=$(echo ${{ steps.vpc-resources.outputs.subnet-ids }} | awk '{print $1}')
+          SG_ID=${{ steps.vpc-resources.outputs.sg-id }}
+          
+          SERVICE_EXISTS=$(aws ecs describe-services \
+            --cluster ${{ env.ECS_CLUSTER }} \
+            --services ${{ env.ECS_SERVICE }} \
+            --region ${{ env.AWS_REGION }} \
+            --query 'services[0].serviceName' \
+            --output text 2>/dev/null || echo "")
+          
+          if [ "$SERVICE_EXISTS" != "${{ env.ECS_SERVICE }}" ]; then
+            echo "Creating new ECS service..."
+            aws ecs create-service \
+              --cluster ${{ env.ECS_CLUSTER }} \
+              --service-name ${{ env.ECS_SERVICE }} \
+              --task-definition ${{ steps.register-task.outputs.task-definition-arn }} \
+              --desired-count 1 \
+              --launch-type FARGATE \
+              --network-configuration "awsvpcConfiguration={subnets=[$SUBNET_ID],securityGroups=[$SG_ID],assignPublicIp=ENABLED}" \
+              --region ${{ env.AWS_REGION }}
+          else
+            echo "Updating existing ECS service..."
+            aws ecs update-service \
+              --cluster ${{ env.ECS_CLUSTER }} \
+              --service ${{ env.ECS_SERVICE }} \
+              --task-definition ${{ steps.register-task.outputs.task-definition-arn }} \
+              --force-new-deployment \
+              --region ${{ env.AWS_REGION }}
+          fi
+
+      - name: Wait for service deployment
+        run: |
+          aws ecs wait services-stable \
+            --cluster ${{ env.ECS_CLUSTER }} \
+            --services ${{ env.ECS_SERVICE }} \
+            --region ${{ env.AWS_REGION }} || true
+
+      - name: Get service details
+        run: |
+          echo "Service deployment initiated!"
+          aws ecs describe-services \
+            --cluster ${{ env.ECS_CLUSTER }} \
+            --services ${{ env.ECS_SERVICE }} \
+            --region ${{ env.AWS_REGION }} \
+            --query 'services[0].[serviceName,status,runningCount,desiredCount]' \
+            --output table
