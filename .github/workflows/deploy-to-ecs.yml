@@ -169,4 +169,56 @@ jobs:
           # Allow inbound on port 8081 from anywhere (0.0.0.0/0)
           aws ec2 authorize-security-group-ingress \
             --group-id $SG_ID \
-            --
+            --protocol tcp \
+            --port 8081 \
+            --cidr 0.0.0.0/0 \
+            --region ${{ env.AWS_REGION }} 2>/dev/null || true
+
+      - name: Create or Update ECS Service
+        run: |
+          SUBNET_ID=$(echo ${{ steps.vpc-resources.outputs.subnet-ids }} | awk '{print $1}')
+          SG_ID=${{ steps.vpc-resources.outputs.sg-id }}
+          
+          SERVICE_EXISTS=$(aws ecs describe-services \
+            --cluster ${{ env.ECS_CLUSTER }} \
+            --services ${{ env.ECS_SERVICE }} \
+            --region ${{ env.AWS_REGION }} \
+            --query 'services[0].serviceName' \
+            --output text 2>/dev/null || echo "")
+          
+          if [ "$SERVICE_EXISTS" != "${{ env.ECS_SERVICE }}" ]; then
+            echo "Creating new ECS service..."
+            aws ecs create-service \
+              --cluster ${{ env.ECS_CLUSTER }} \
+              --service-name ${{ env.ECS_SERVICE }} \
+              --task-definition ${{ steps.register-task.outputs.task-definition-arn }} \
+              --desired-count 1 \
+              --launch-type FARGATE \
+              --network-configuration "awsvpcConfiguration={subnets=[$SUBNET_ID],securityGroups=[$SG_ID],assignPublicIp=ENABLED}" \
+              --region ${{ env.AWS_REGION }}
+          else
+            echo "Updating existing ECS service..."
+            aws ecs update-service \
+              --cluster ${{ env.ECS_CLUSTER }} \
+              --service ${{ env.ECS_SERVICE }} \
+              --task-definition ${{ steps.register-task.outputs.task-definition-arn }} \
+              --force-new-deployment \
+              --region ${{ env.AWS_REGION }}
+          fi
+
+      - name: Wait for service deployment
+        run: |
+          aws ecs wait services-stable \
+            --cluster ${{ env.ECS_CLUSTER }} \
+            --services ${{ env.ECS_SERVICE }} \
+            --region ${{ env.AWS_REGION }} || true
+
+      - name: Get service details
+        run: |
+          echo "Service deployment initiated!"
+          aws ecs describe-services \
+            --cluster ${{ env.ECS_CLUSTER }} \
+            --services ${{ env.ECS_SERVICE }} \
+            --region ${{ env.AWS_REGION }} \
+            --query 'services[0].[serviceName,status,runningCount,desiredCount]' \
+            --output table
