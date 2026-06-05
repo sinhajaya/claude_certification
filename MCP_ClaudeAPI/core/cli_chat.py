@@ -2,9 +2,9 @@ from typing import List, Tuple
 from mcp.types import Prompt, PromptMessage
 from anthropic.types import MessageParam
 
-from core.chat import Chat
-from core.claude import Claude
-from mcp_client import MCPClient
+from MCP_ClaudeAPI.core.chat import Chat
+from MCP_ClaudeAPI.core.claude import Claude
+from MCP_ClaudeAPI.mcp_client import MCPClient
 
 
 class CliChat(Chat):

@@ -1,9 +1,9 @@
 from typing import Tuple
 from mcp.types import Prompt, PromptMessage
 
-from core.chat import Chat
-from core.bedrock import Bedrock, to_bedrock_messages
-from mcp_client import MCPClient
+from MCP_ClaudeAPI.core.chat import Chat
+from MCP_ClaudeAPI.core import Bedrock, to_bedrock_messages
+from MCP_ClaudeAPI.mcp_client import MCPClient
 
 
 class CliChat(Chat):

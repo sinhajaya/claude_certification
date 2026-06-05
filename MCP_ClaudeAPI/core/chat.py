@@ -1,6 +1,6 @@
-from core.claude import Claude
-from mcp_client import MCPClient
-from core.tools import ToolManager
+from MCP_ClaudeAPI.core.claude import Claude
+from MCP_ClaudeAPI.mcp_client import MCPClient
+from MCP_ClaudeAPI.core.tools import ToolManager
 from anthropic.types import MessageParam
 
 

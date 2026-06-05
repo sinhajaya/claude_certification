@@ -1,7 +1,7 @@
 import json
 from typing import Optional, Any, Literal
 from mcp.types import CallToolResult, Tool, TextContent
-from mcp_client import MCPClient
+from MCP_ClaudeAPI.mcp_client import MCPClient
 
 
 class ToolManager:

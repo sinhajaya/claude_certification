@@ -1,7 +1,7 @@
 from typing import Dict
-from core.bedrock import Bedrock
-from mcp_client import MCPClient
-from core.tools import ToolManager
+from MCP_ClaudeAPI.core import Bedrock
+from MCP_ClaudeAPI.mcp_client import MCPClient
+from MCP_ClaudeAPI.core import ToolManager
 
 
 class Chat:
